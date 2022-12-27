@@ -1,0 +1,284 @@
+---
+title: "Mini project 1_ RNA seq"
+author: "DAN LE"
+format: html
+editor: visual
+---
+
+### About input data:
+
+The authors report on differential analysis of lung fibroblasts in response to loss of the developmental transcription factor HOXA1. Their results and others indicate HOXA1 is required for lung fibroblasts and HeLa cell cycle progression.
+
+In this analysis, we will check for differential expression over gene sets from KEGG pathways instead of changes of individual genes.
+
+### Section 1. Differential Expression Analysis
+
+First, we need to download and count data and metadata from GSE37704.
+
+```{r}
+library(DESeq2)
+```
+
+Next, load our data files into name
+
+```{r}
+metaFile <- "GSE37704_metadata.csv"
+countFile <- "GSE37704_featurecounts.csv"
+```
+
+```{r}
+#import metadata and take a look 
+colData = read.csv(metaFile, row.names = 1)
+head(colData)
+```
+
+```{r}
+#import countdata 
+countData = read.csv(countFile, row.names = 1)
+head(countData)
+```
+
+```{r}
+#remove the length columns in countdata so it could match with colData
+countData <- as.matrix(countData[,-1])
+head(countData)
+```
+
+There are genes where the expression is 0 across sample, so we need to filter those out.
+
+```{r}
+head(rowSums(countData)==0)
+```
+
+```{r}
+#remove row that have 0 data 
+zeroRow <- rowSums(countData) == 0
+#negative sign only work on number, not TF so need to use ! to flip. 
+countData = countData[!zeroRow,]
+head(countData)
+```
+
+```{r}
+#number of genes
+nrow(countData)
+```
+
+### Running DESeq2
+
+Metadata will have the condition.
+
+Feature counts will have the genes.
+
+```{r}
+#condition is the variable that counts depend on. 
+dds = DESeqDataSetFromMatrix(countData = countData, colData = colData, design = ~condition)
+dds = DESeq(dds)
+```
+
+```{r}
+dds
+```
+
+```{r}
+resultsNames(dds)
+```
+
+Next, get results from HOXA1 kd versus siRNA.
+
+```{r}
+res = results(dds, contrast = c("condition", "hoxa1_kd", "control_sirna"))
+```
+
+```{r}
+summary(res)
+#can change the p-value threshold 
+#sumary(res, alpha = 0.01)
+```
+
+By using summary(), we can see that there are 27% upregulated genes and 28% down regulated genes.
+
+### Volcano plot
+
+Let's make volcano plot with log2 fold change vs.-log(adjusted p-value).
+
+```{r}
+plot(res$log2FoldChange, -log(res$padj))
+```
+
+```{r}
+#improve the plot by adding color and annotation
+#make a default color vector for all genes
+mycols <- rep("gray", nrow(res))
+
+#red for all genes with abs fold change > 2
+mycols[abs(res$log2FoldChange)>2] <- "red"
+
+#blue for all genes with p-value < 0.01
+sig.ind <- (res$pvalue < 0.01) & (abs(res$log2FoldChange)>2)
+mycols[sig.ind] <- "blue"
+
+plot(res$log2FoldChange, -log(res$padj), col=mycols, xlab = "log2(Fold Change)", ylab = "-log(p-value)" )
+
+```
+
+Blue dots represent genes that have absolute fold change greater than 2 and p-value less than 0.01.
+
+### Adding gene annotation
+
+Since there are a lot of genes in our differential expression geneset (DEG), we can narrow it down by using pathway analysis. However, we need to do some cleanup because our DEG uses Ensemble gene IDs, but the enrichment geneset will use KEGG which uses Entrez gene IDs. (convert Ensemble ID -\> Entrez ID)
+
+```{r}
+#annotate DEG with SYMBOL, ENTREZID, GENENAME
+#by mapIds() and an annotation file 
+
+#load libraries 
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+
+```
+
+```{r}
+columns(org.Hs.eg.db)
+```
+
+```{r}
+head(res)
+```
+
+```{r}
+#add column symbol to our results
+res$symbol = mapIds(org.Hs.eg.db,
+                    keys=row.names(res), 
+                    keytype="ENSEMBL",
+                    column="SYMBOL",
+                    multiVals="first")
+```
+
+```{r}
+res$entrez = mapIds(org.Hs.eg.db,
+                    keys=row.names(res),
+                    keytype="ENSEMBL",
+                    column="ENTREZID",
+                    multiVals="first")
+```
+
+```{r}
+res$name =   mapIds(org.Hs.eg.db,
+                    keys=row.names(res),
+                    keytype="ENSEMBL",
+                    column="GENENAME",
+                    multiVals="first")
+```
+
+```{r}
+head(res, 10)
+```
+
+Now, we can rank these results by adjusted p-value and save into new csv file.
+
+```{r}
+res <- res[order(res$padj),]
+write.csv(res, file="deseq_results.csv")
+```
+
+### Section 2. Pathway analysis
+
+#### KEGG pathways
+
+In this section, we will use the `gage` package for pathway analysis and `pathview` package to draw pathways diagram.
+
+```{r}
+library(pathview)
+library(gage)
+library(gageData)
+```
+
+```{r}
+#load the following data
+#data is a list of 229 elements
+#each element is a vector that contains Entrez IDs for a single KEGG pathway. 
+#data("go.sets.hs")
+#head(go.sets.hs, 2)
+
+data("kegg.sets.hs")
+#view the first 3 pathways
+head(kegg.sets.hs, 3)
+
+```
+
+```{r}
+data("sigmet.idx.hs")   # "sigmet" is index of signaling and metabolic pathways in KEGG 
+
+#focus on signaling and metabolic pathways in humans for cleaner geneset. 
+kegg.sets.hs <- kegg.sets.hs[sigmet.idx.hs]
+head(kegg.sets.hs,2)
+
+```
+
+The `gage` function requires a vector of fold changes, with Entrez gene IDs as the name of vector.
+
+```{r}
+#create new vector for gage
+foldchanges <- res$log2FoldChange
+names(foldchanges) <- res$entrez
+head(foldchanges)
+```
+
+Let's run `gage` pathway analysis!!!
+
+```{r}
+keggres <- gage(foldchanges, gsets = kegg.sets.hs)
+attributes(keggres)
+```
+
+```{r}
+#These are overall downregulated pathways
+head(keggres$less)
+```
+
+```{r}
+#upregulated pathways
+head(keggres$greater)
+```
+
+Let's use `pathview` to draw the pathway.
+
+```{r}
+pathview(gene.data = foldchanges, pathway.id = "hsa04110")
+```
+
+![](hsa04110.pathview.png){width="551"}
+
+Let's extract top 5 up-regulated pathways!
+
+```{r}
+keggres_top5up <- rownames(keggres$greater)[1:5]
+
+#extract corresponding pathway IDs
+keggres_top5up <- substr(keggres_top5up, start=1, stop=8)
+keggres_top5up
+```
+
+Now, we have the pathway IDs, we can pass them into `pathview`
+
+```{r}
+pathview(gene.data = foldchanges, pathway.id = keggres_top5up, species ="hsa")
+```
+
+![](hsa04142.pathview.png){width="538"}
+
+![](hsa04640.pathview.png){width="538"}
+
+### Section 3. Reactome Analysis
+
+```{r}
+sig_genes <- res[res$padj <= 0.05 & !is.na(res$padj), "symbol"]
+```
+
+```{r}
+write.table(sig_genes, file="significant_genes.txt", row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+### Reference
+
+Trapnell *et al*. Differential analysis of gene regulation at transcript resolution with RNA-seq. *Nat. Biotechnol.*2013;31(1):46-53.
